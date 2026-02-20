@@ -1,77 +1,49 @@
 import * as vscode from 'vscode';
+import { injectAnnotation } from './annotator/annotationInjector';
 
-let lastEditTime = Date.now();
+let ignoreNextChange = false;
 
 export function activate(context: vscode.ExtensionContext) {
 
-    console.log("AI Code Annotator Extension Activated");
+    console.log("AI Code Annotator Activated");
 
-    vscode.workspace.onDidChangeTextDocument(event => {
+    // Override Paste Command (Ctrl+V and Right Click Paste)
+    const pasteCommand = vscode.commands.registerCommand(
+        'extension.handlePaste',
+        async () => {
+            ignoreNextChange = true;
+            await vscode.commands.executeCommand('editor.action.clipboardPasteAction');
+        }
+    );
+
+    context.subscriptions.push(pasteCommand);
+
+    vscode.workspace.onDidChangeTextDocument(async (event) => {
 
         const editor = vscode.window.activeTextEditor;
         if (!editor) return;
 
-        const document = event.document;
+        // If change triggered by paste → ignore
+        if (ignoreNextChange) {
+            ignoreNextChange = false;
+            return;
+        }
 
-        event.contentChanges.forEach(change => {
+        for (const change of event.contentChanges) {
 
             const insertedText = change.text;
-            if (!insertedText) return;
-
-            const insertedLines = insertedText.split('\n').length;
             const replacedLines = change.range.end.line - change.range.start.line;
+            const insertedLines = insertedText.split('\n').length;
 
-            const currentTime = Date.now();
-            const timeDiff = currentTime - lastEditTime;
-            lastEditTime = currentTime;
+            const isLargeInsert = insertedLines >= 8;
+            const isLargeReplace = replacedLines >= 5;
 
-            const isLargeInsert = insertedLines >= 5;
-            const isLargeReplace = replacedLines >= 3;
-            const isFastEdit = timeDiff < 50;
-
-            if (isLargeInsert || isLargeReplace || isFastEdit) {
-
+            if (isLargeInsert || isLargeReplace) {
                 const position = change.range.start;
-                const languageId = document.languageId;
-                const commentSyntax = getCommentSyntax(languageId);
-
-                const annotation = generateAnnotation(commentSyntax);
-
-                editor.edit(editBuilder => {
-                    editBuilder.insert(position, annotation);
-                });
+                await injectAnnotation(editor, position);
             }
-        });
-
+        }
     });
-
-}
-
-function generateAnnotation(comment: string): string {
-
-    const today = new Date().toISOString().split('T')[0];
-
-    return `${comment} START_AI_GENERATED_CODE\n`
-        + `${comment} TOOL: GitHub Copilot\n`
-        + `${comment} DATE: ${today}\n`
-        + `${comment} ACTION: GENERATED\n`
-        + `${comment} END_AI_GENERATED_CODE\n`;
-}
-
-function getCommentSyntax(languageId: string): string {
-
-    switch (languageId) {
-        case 'python':
-        case 'shellscript':
-            return '#';
-        case 'html':
-        case 'xml':
-            return '<!--';
-        case 'css':
-            return '/*';
-        default:
-            return '//';
-    }
 }
 
 export function deactivate() {}
